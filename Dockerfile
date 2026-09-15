@@ -13,7 +13,7 @@ WORKDIR /app
 
 # ── Node.js（验证码 param 提供器/求解器）+ Chromium + Xvfb（真实浏览器引擎过无痕验证）──
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates gnupg chromium fonts-liberation xvfb \
+    && apt-get install -y --no-install-recommends curl ca-certificates gnupg chromium fonts-liberation xvfb xauth \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get purge -y curl gnupg \
