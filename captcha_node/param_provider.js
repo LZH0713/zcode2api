@@ -34,6 +34,7 @@ let browser = null;
 let page = null;
 let ready = false;
 let chain = Promise.resolve();          // 串行化每次验证
+let pageUsed = false;                   // SDK 实例一次验证后即失效，需重载页面重新 init
 let lastParamAt = 0;
 let mints = 0, fails = 0;
 
@@ -42,30 +43,41 @@ function errLog(...a) { console.error('[provider]', ...a); }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function ensurePage() {
-  if (browser && page && !page.isClosed()) return page;
-
-  if (browser) { try { await browser.close(); } catch {} }
-  browser = null; page = null;
-  log('launch chromium:', CHROMIUM);
-  browser = await puppeteer.launch({
-    executablePath: CHROMIUM,
-    headless: !HEADFUL,   // 阿里云风控可能识别 headless；HEADFUL=1 可切换有头模式
-    args: [
-      '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
-      '--disable-gpu', '--disable-blink-features=AutomationControlled',
-      '--lang=zh-CN', '--window-size=1280,900',
-    ],
-  });
+async function openPage() {
   page = await browser.newPage();
   await page.evaluateOnNewDocument(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => false });
   });
   await page.goto(PAGE_URL, { waitUntil: 'domcontentloaded', timeout: READY_TIMEOUT_MS });
   await page.waitForFunction('window.__ready === true', { timeout: READY_TIMEOUT_MS, polling: 200 });
-  ready = true;
+  pageUsed = false;
   log('page ready');
   return page;
+}
+
+async function ensurePage() {
+  if (browser && page && !page.isClosed()) {
+    // 对齐 ZCode App 行为（每次验证前 IX() 重置重 init）：用过的页面重载换新 SDK 实例
+    if (!pageUsed) return page;
+    try { await page.close(); } catch {}
+    page = null;
+  } else if (browser) {
+    try { await browser.close(); } catch {}
+    browser = null; page = null;
+  }
+  if (!browser) {
+    log('launch chromium:', CHROMIUM);
+    browser = await puppeteer.launch({
+      executablePath: CHROMIUM,
+      headless: !HEADFUL,   // 阿里云风控识别 headless（F001），默认有头 + Xvfb 虚拟屏
+      args: [
+        '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
+        '--disable-gpu', '--disable-blink-features=AutomationControlled',
+        '--lang=zh-CN', '--window-size=1280,900',
+      ],
+    });
+  }
+  return openPage();
 }
 
 async function mint(pg) {
@@ -93,6 +105,7 @@ async function acquireParam() {
   try {
     const param = await mint(pg);
     mints += 1;
+    pageUsed = true;
     lastParamAt = Date.now();
     return param;
   } catch (e) {

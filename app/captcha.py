@@ -82,8 +82,8 @@ class CaptchaProvider:
                 *cmd,
                 cwd=str(settings.CAPTCHA_SOLVER_DIR),
                 env=env_extra,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
+                stdout=None,   # 继承容器日志，便于观察 mint 失败原因
+                stderr=None,
             )
         except Exception as err:  # noqa: BLE001
             logs.err("captcha", f"param 提供器启动失败: {err}")
