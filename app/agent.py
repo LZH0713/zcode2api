@@ -9,6 +9,7 @@ import uuid
 
 from . import settings
 from .models import Account
+from .quota import _device_mid
 
 # 透传客户端 header 时需要剔除的字段
 _DROP_HEADERS = {
@@ -60,6 +61,7 @@ def build_request(
         "X-ZCode-App-Version": "3.0.1",
         "X-ZCode-Agent": "glm",
         "HTTP-Referer": "https://zcode.z.ai/",
+        "X-Device-Mid": _device_mid(),
         # 会话归因头（对齐官方 App：同账号稳定 session、每请求独立 query/trace）
         "x-request-id": str(uuid.uuid4()),
         "x-zcode-trace-id": str(uuid.uuid4()),
