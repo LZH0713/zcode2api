@@ -42,6 +42,12 @@ process.on('uncaughtException', (e) => errLog('uncaughtException:', (e && e.stac
 process.on('unhandledRejection', (e) => errLog('unhandledRejection:', (e && (e.stack || e.message)) || e));
 
 function startChrome() {
+  // 清理上次容器遗留的 profile 锁（否则换主机名后 Chromium 拒绝启动）
+  if (PROFILE_DIR) {
+    for (const f of ["SingletonLock", "SingletonCookie", "SingletonSocket"]) {
+      try { fs.unlinkSync(path.join(PROFILE_DIR, f)); } catch {}
+    }
+  }
   const args = [
     `--user-data-dir=${PROFILE_DIR || '/tmp/captcha-profile'}`,
     '--no-first-run', '--no-default-browser-check',
