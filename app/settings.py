@@ -57,6 +57,15 @@ CAPTCHA_SOLVER_JS = CAPTCHA_SOLVER_DIR / "solver.js"
 CAPTCHA_SOLVE_RETRIES = _int("ZCODE_CAPTCHA_RETRIES", 4)
 CAPTCHA_SOLVE_TIMEOUT = _int("ZCODE_CAPTCHA_TIMEOUT", 40)  # 每次求解超时（秒）
 
+# Chromium param 提供器（真实浏览器引擎跑无痕验证，阿里云风控升级后 jsdom 会被 F001 拒绝）
+CAPTCHA_PROVIDER_ENABLED = os.getenv("ZCODE_CAPTCHA_PROVIDER", "1").lower() not in ("0", "false", "off")
+CAPTCHA_PROVIDER_PORT = _int("ZCODE_CAPTCHA_PROVIDER_PORT", 3931)
+CAPTCHA_PROVIDER_URL = os.getenv("ZCODE_CAPTCHA_PROVIDER_URL", f"http://127.0.0.1:{CAPTCHA_PROVIDER_PORT}")
+CHROMIUM_PATH = os.getenv("ZCODE_CHROMIUM_PATH", "chromium")
+
+# 子进程共用环境（保证 Node 子进程能找到 node_modules 与工具链）
+CHILD_ENV = {**os.environ}
+
 # ── 用量监控 ─────────────────────────────────────────────────────────────────
 # 后台自动刷新账号额度的间隔（秒）。0 表示关闭后台轮询，仅按需刷新。
 QUOTA_REFRESH_INTERVAL = _int("ZCODE_QUOTA_REFRESH_INTERVAL", 60)

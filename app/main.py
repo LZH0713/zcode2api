@@ -31,6 +31,15 @@ def _display_host() -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     monitor.start()
+    try:
+        config = await captcha_manager.fetch_config()
+        await captcha_manager.provider.start(
+            scene=str(config.get("sceneId") or "11xygtvd"),
+            region=str(config.get("region") or "sgp"),
+            prefix=str(config.get("prefix") or "no8xfe"),
+        )
+    except Exception as err:  # noqa: BLE001 - 提供器失败不阻塞服务启动
+        logs.warn("captcha", f"param 提供器初始化失败（将回退 jsdom）: {err}")
     base = f"http://{_display_host()}:{settings.PORT}"
     logs.banner([
         f"{logs._B}{logs._MAG}zcode2api{logs._R} {logs._DIM}v{settings.APP_VERSION} · Python{logs._R}",
@@ -42,8 +51,6 @@ async def lifespan(app: FastAPI):
     finally:
         await monitor.stop()
         await captcha_manager.close()
-
-
 def create_app() -> FastAPI:
     app = FastAPI(title="zcode2api", version=settings.APP_VERSION, lifespan=lifespan)
 

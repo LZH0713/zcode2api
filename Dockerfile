@@ -11,14 +11,16 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# ── Node.js（供无浏览器无痕验证求解器使用）──────────────────────────────────
+# ── Node.js（验证码 param 提供器/求解器）+ Chromium + Xvfb（真实浏览器引擎过无痕验证）──
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates gnupg \
+    && apt-get install -y --no-install-recommends curl ca-certificates gnupg chromium fonts-liberation xvfb \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get purge -y curl gnupg \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
+
+ENV ZCODE_CHROMIUM_PATH=/usr/bin/chromium
 
 # ── Python 依赖（独立分层，便于缓存）────────────────────────────────────────
 COPY requirements.txt ./

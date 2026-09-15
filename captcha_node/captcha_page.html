@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<!-- 阿里云无痕验证 SDK 宿主页（file:// origin，与 ZCode App 内一致）。
+     由 param_provider.js 通过 puppeteer 加载；结果写入 window.__result 供轮询。 -->
+<html lang="zh">
+<head><meta charset="utf-8"><title>captcha provider</title></head>
+<body>
+<div id="captcha-element"></div>
+<button id="captcha-button">start</button>
+<pre id="log"></pre>
+<script src="https://o.alicdn.com/captcha-frontend/aliyunCaptcha/AliyunCaptcha.js"></script>
+<script>
+window.__ready = false;
+window.__instance = null;
+window.__busy = false;
+window.__result = null;
+
+// scene/region/prefix 由 param_provider 通过 URL 查询参数注入
+function qp(name, fallback) {
+  var v = new URLSearchParams(location.search).get(name);
+  return (v && v.trim()) ? v.trim() : fallback;
+}
+var SCENE = qp('scene', '11xygtvd');
+var REGION = qp('region', 'sgp');
+var PREFIX = qp('prefix', 'no8xfe');
+
+function log(msg) {
+  var el = document.getElementById('log');
+  el.textContent = (el.textContent + '\n' + msg).slice(-4000);
+}
+
+// 对齐 ZCode App 的失败分类：fail 回调里若直接带了可用的 captchaVerifyParam（terminal pass）也算成功
+function extractParamFromFail(e) {
+  if (!e || typeof e !== 'object') return null;
+  var v = e.captchaVerifyParam || e.CaptchaVerifyParam;
+  return (typeof v === 'string' && v.trim()) ? v.trim() : null;
+}
+function settle(ok, param, info) {
+  window.__busy = false;
+  window.__result = { ok: ok, param: param || null, info: info || null };
+}
+
+window.AliyunCaptchaConfig = { region: REGION, prefix: PREFIX };
+initAliyunCaptcha({
+  SceneId: SCENE, mode: 'popup', language: 'cn', region: REGION, prefix: PREFIX,
+  element: '#captcha-element', button: '#captcha-button', showErrorTip: false,
+  getInstance: function (inst) {
+    window.__instance = inst;
+    window.__ready = true;
+    log('instance ready, traceless=' + (typeof inst.startTracelessVerification === 'function'));
+  },
+  success: function (param) {
+    if (param && param.length) { log('success len=' + param.length); settle(true, param); }
+    else { log('success empty'); settle(false, null, { code: 'EMPTY_SUCCESS' }); }
+  },
+  fail: function (e) {
+    var p = extractParamFromFail(e);
+    if (p) { log('fail-with-param len=' + p.length); settle(true, p); return; }
+    var code = (e && e.verifyCode) || (e && e.Code) || 'FAIL';
+    log('fail ' + code);
+    settle(false, null, { code: code, raw: String(JSON.stringify(e)).slice(0, 300) });
+  },
+  onError: function (e) {
+    log('error');
+    settle(false, null, { code: 'SDK_ERROR', raw: String(JSON.stringify(e)).slice(0, 300) });
+  },
+});
+
+// 由 param_provider 调用：触发一次新的无痕验证
+window.__start = function () {
+  if (!window.__instance) return 'not-ready';
+  if (window.__busy) return 'busy';
+  window.__busy = true;
+  window.__result = null;
+  try {
+    if (typeof window.__instance.startTracelessVerification === 'function') {
+      window.__instance.startTracelessVerification();
+      return 'started';
+    }
+    if (typeof window.__instance.show === 'function') { window.__instance.show(); return 'started-show'; }
+    window.__busy = false;
+    return 'no-method';
+  } catch (err) {
+    window.__busy = false;
+    return 'throw:' + err.message;
+  }
+};
+</script>
+</body>
+</html>
