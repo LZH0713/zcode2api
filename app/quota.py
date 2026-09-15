@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
+import uuid
 
 import httpx
 
@@ -14,9 +16,43 @@ from . import logs, settings
 from .models import Account, Status
 from .store import store
 
+_DEVICE_MID: str | None = None
+
+
+def _device_mid() -> str:
+    """Return a stable device ID required by the ZCode billing API."""
+    global _DEVICE_MID
+    if _DEVICE_MID:
+        return _DEVICE_MID
+
+    path = settings.DATA_DIR / "device_mid"
+    try:
+        value = path.read_text(encoding="ascii").strip()
+        if value:
+            _DEVICE_MID = value
+            return value
+    except OSError:
+        pass
+
+    _DEVICE_MID = str(uuid.uuid4())
+    try:
+        os.makedirs(settings.DATA_DIR, exist_ok=True)
+        path.write_text(_DEVICE_MID, encoding="ascii")
+    except OSError as err:
+        logs.warn("quota", f"设备 ID 持久化失败，将在本进程内复用: {err}")
+    return _DEVICE_MID
+
 
 def _auth_headers(account: Account) -> dict:
-    headers = {"Content-Type": "application/json"}
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://zcode.z.ai/",
+        "User-Agent": settings.USER_AGENT,
+        "X-ZCode-App-Version": "3.0.1",
+        "X-Device-Mid": _device_mid(),
+        "x-request-id": str(uuid.uuid4()),
+    }
     if account.mode == "jwt" and account.jwt_token:
         headers["Authorization"] = f"Bearer {account.jwt_token}"
     elif account.api_key:
