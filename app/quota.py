@@ -94,11 +94,13 @@ async def fetch_quota(account: Account) -> dict:
             store.update_account(account)
             return {"error": account.last_error}
 
+    plans: list[dict] = []
     if billing_res is not None and billing_res.status_code == 200:
         try:
             data = billing_res.json()
             result["billing"] = data
-            plans = (data.get("data") or {}).get("plans") or []
+            billing_data = data.get("data") or {}
+            plans = billing_data.get("plans") or []
             account.plan = plans[0] if plans else {}
         except (ValueError, KeyError):
             pass
@@ -108,13 +110,26 @@ async def fetch_quota(account: Account) -> dict:
         try:
             data = balance_res.json()
             result["balance"] = data
-            for bal in (data.get("data") or {}).get("balances") or []:
-                name = bal.get("show_name") or bal.get("model") or "model"
+            balance_data = data.get("data") or {}
+            plan_names = {
+                p.get("user_plan_id"): p.get("name") or p.get("plan_id") or "套餐"
+                for p in (balance_data.get("plans") or plans)
+            }
+            for index, bal in enumerate(balance_data.get("balances") or [], 1):
+                model_name = bal.get("show_name") or bal.get("model") or "model"
+                plan_name = plan_names.get(bal.get("user_plan_id"), "套餐")
+                name = f"{plan_name} · {model_name}"
+                if name in quota_map:
+                    name = f"{name} ({index})"
                 quota_map[name] = {
                     "total": bal.get("total_units"),
                     "used": bal.get("used_units"),
                     "remaining": bal.get("remaining_units"),
                     "expires_at": bal.get("expires_at"),
+                    "period_start": bal.get("period_start"),
+                    "period_end": bal.get("period_end"),
+                    "plan_name": plan_name,
+                    "model": model_name,
                 }
         except (ValueError, KeyError):
             pass
@@ -130,7 +145,9 @@ async def fetch_quota(account: Account) -> dict:
         account.quota = quota_map
         # 额度用完判定：所有模型剩余 <= 0
         remainings = [
-            q.get("remaining") for q in quota_map.values() if q.get("remaining") is not None
+            q.get("remaining") for q in quota_map.values()
+            if q.get("remaining") is not None
+            and (not q.get("expires_at") or q.get("expires_at") > now)
         ]
         if remainings and all((r or 0) <= 0 for r in remainings):
             account.status = Status.EXHAUSTED

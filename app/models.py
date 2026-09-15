@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import secrets
 import time
 from dataclasses import asdict, dataclass, field
@@ -70,6 +72,22 @@ class Account:
     def secret(self) -> str | None:
         return self.jwt_token if self.mode == "jwt" else self.api_key
 
+    def identity(self) -> str | None:
+        """Return a non-secret email/phone/user identifier from JWT claims."""
+        if self.mode != "jwt" or not self.jwt_token:
+            return None
+        try:
+            part = self.jwt_token.split(".")[1]
+            part += "=" * ((4 - len(part) % 4) % 4)
+            claims = json.loads(base64.urlsafe_b64decode(part))
+        except (IndexError, ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        for key in ("email", "phone", "mobile", "username", "user_id", "userId", "sub"):
+            value = claims.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        return None
+
     def is_selectable(self, now: float | None = None) -> bool:
         """是否可被轮询选中。"""
         if not self.enabled or self.status in (Status.DISABLED, Status.INVALID):
@@ -99,6 +117,7 @@ class Account:
             "provider": self.provider,
             "mode": self.mode,
             "token_masked": masked,
+            "identity": self.identity(),
             "enabled": self.enabled,
             "status": self.effective_status(),
             "quota": self.quota,

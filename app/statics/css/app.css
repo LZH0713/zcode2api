@@ -125,9 +125,12 @@ tr:hover td{background:#fdfdfd}
 .q-bar-fill{height:100%;background:#4c9168;border-radius:999px}
 
 /* Quota expanded rows (展开为进度条) */
-.quota-rows{display:flex;flex-direction:column;gap:7px;min-width:220px;max-width:300px}
-.quota-row{display:grid;grid-template-columns:58px minmax(60px,1fr) auto;align-items:center;gap:10px}
-.quota-row-name{font-size:11px;font-weight:600;color:#6a6a6a;white-space:nowrap}
+.quota-rows{display:flex;flex-direction:column;gap:8px;min-width:300px;max-width:360px}
+.quota-row{display:flex;flex-direction:column;gap:3px;min-width:0}
+.quota-row-head{display:flex;align-items:baseline;gap:6px;min-width:0}
+.quota-row-name{font-size:11px;font-weight:600;color:#6a6a6a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.quota-row-model{font-size:10px;color:#aaa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.quota-row-meta{display:grid;grid-template-columns:minmax(80px,1fr) auto;align-items:center;gap:10px}
 .quota-row-track{height:6px;border-radius:999px;background:#eef0ee;overflow:hidden}
 .quota-row-fill{height:100%;border-radius:999px;transition:width .3s}
 .quota-row-val{font-size:11px;color:#9a9a9a;white-space:nowrap;font-variant-numeric:tabular-nums}

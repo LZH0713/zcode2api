@@ -90,6 +90,20 @@ async def delete_accounts(ids: list[str] = Body(...)):
     return {"deleted": deleted}
 
 
+# ── 查看凭据 ─────────────────────────────────────────────────────────────────
+@router.get("/accounts/{account_id}/token")
+async def get_account_token(account_id: str):
+    acc = store.find_any(account_id)
+    if not acc:
+        raise HTTPException(404, "账号不存在")
+    if not acc.secret:
+        raise HTTPException(404, "账号凭据不存在")
+    return JSONResponse(
+        {"token": acc.secret},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 # ── 编辑账号 ─────────────────────────────────────────────────────────────────
 @router.put("/accounts/{account_id}")
 async def edit_account(account_id: str, payload: dict = Body(...)):
