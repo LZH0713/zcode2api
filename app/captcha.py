@@ -67,7 +67,14 @@ class CaptchaProvider:
             self._proc = None
 
     async def _spawn(self, chromium: str) -> None:
-        env_extra = {**settings.CHILD_ENV, "ZCODE_CHROMIUM_PATH": chromium}
+        env_extra = {**settings.CHILD_ENV,
+                     "ZCODE_CHROMIUM_PATH": chromium,
+                     "ZCODE_CAPTCHA_PARAM_REUSE_MS": str(settings.CAPTCHA_PARAM_REUSE_MS)}
+        try:
+            settings.CAPTCHA_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+            env_extra["ZCODE_CAPTCHA_PROFILE_DIR"] = str(settings.CAPTCHA_PROFILE_DIR)
+        except OSError:
+            pass
         cmd = [settings.NODE_PATH, str(settings.CAPTCHA_SOLVER_DIR / "param_provider.js"),
                self._scene, self._region, self._prefix]
         # 阿里云风控识别 headless（F001），需有头模式；服务器无显示则套 Xvfb 虚拟屏

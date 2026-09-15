@@ -62,6 +62,10 @@ CAPTCHA_PROVIDER_ENABLED = os.getenv("ZCODE_CAPTCHA_PROVIDER", "1").lower() not 
 CAPTCHA_PROVIDER_PORT = _int("ZCODE_CAPTCHA_PROVIDER_PORT", 3931)
 CAPTCHA_PROVIDER_URL = os.getenv("ZCODE_CAPTCHA_PROVIDER_URL", f"http://127.0.0.1:{CAPTCHA_PROVIDER_PORT}")
 CHROMIUM_PATH = os.getenv("ZCODE_CHROMIUM_PATH", "chromium")
+# param 复用窗口（ms）：IP 信誉节奏下无痕验证约每分钟放行一发，burst 请求共享 param
+CAPTCHA_PARAM_REUSE_MS = _int("ZCODE_CAPTCHA_PARAM_REUSE_MS", 45_000)
+# Chromium 持久 profile（攒设备信誉，提升 mint 成功率）
+CAPTCHA_PROFILE_DIR = DATA_DIR / "captcha-profile"
 
 # 子进程共用环境（保证 Node 子进程能找到 node_modules 与工具链）
 CHILD_ENV = {**os.environ}

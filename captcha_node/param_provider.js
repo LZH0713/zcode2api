@@ -29,13 +29,18 @@ const PAGE_URL = `http://127.0.0.1:${PORT}/page`
 
 const READY_TIMEOUT_MS = 40_000;
 const MINT_TIMEOUT_MS = 30_000;
+// IP 信誉节奏：数据中心 IP 上无痕验证约每 60-90s 只放行一发；
+// 在复用窗口内直接返回上一个 param（上游历史上接受 45s 内复用），F001 后延迟重试
+const REUSE_MS = Number(process.env.ZCODE_CAPTCHA_PARAM_REUSE_MS || 45_000);
+const FAIL_RETRY_DELAY_MS = Number(process.env.ZCODE_CAPTCHA_FAIL_RETRY_MS || 20_000);
+const PROFILE_DIR = process.env.ZCODE_CAPTCHA_PROFILE_DIR || '';
 
 let browser = null;
 let page = null;
 let ready = false;
 let chain = Promise.resolve();          // 串行化每次验证
 let pageUsed = false;                   // SDK 实例一次验证后即失效，需重载页面重新 init
-let lastParamAt = 0;
+let lastParam = null, lastParamAt = 0;
 let mints = 0, fails = 0;
 
 function log(...a) { console.log('[provider]', ...a); }
@@ -70,6 +75,7 @@ async function ensurePage() {
     browser = await puppeteer.launch({
       executablePath: CHROMIUM,
       headless: !HEADFUL,   // 阿里云风控识别 headless（F001），默认有头 + Xvfb 虚拟屏
+      ...(PROFILE_DIR ? { userDataDir: PROFILE_DIR } : {}),  // 持久 profile 攒设备信誉
       args: [
         '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
         '--disable-gpu', '--disable-blink-features=AutomationControlled',
@@ -78,6 +84,20 @@ async function ensurePage() {
     });
   }
   return openPage();
+}
+
+async function mintWithRetry() {
+  try {
+    const param = await acquireParam();
+    return param;
+  } catch (e) {
+    // F001 多为 IP 节奏限制：等待后重开页面再试一次
+    errLog(`mint failed (${e.message}); retry in ${FAIL_RETRY_DELAY_MS}ms`);
+    try { if (page && !page.isClosed()) await page.close(); } catch {}
+    page = null;
+    await sleep(FAIL_RETRY_DELAY_MS);
+    return acquireParam();
+  }
 }
 
 async function mint(pg) {
@@ -106,6 +126,7 @@ async function acquireParam() {
     const param = await mint(pg);
     mints += 1;
     pageUsed = true;
+    lastParam = param;
     lastParamAt = Date.now();
     return param;
   } catch (e) {
@@ -117,7 +138,6 @@ async function acquireParam() {
 const server = http.createServer((req, res) => {
   const url = req.url || '/';
   if (url.startsWith('/page')) {
-    // 页面容器：http origin（file:// origin 会影响验证通过率），参数写死进 HTML
     const html = PAGE_HTML
       .replace(/'11xygtvd'/g, JSON.stringify(SCENE))
       .replace(/'sgp'/g, JSON.stringify(REGION))
@@ -131,14 +151,21 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({
       ok: true, ready,
       lastParamAgeMs: lastParamAt ? Date.now() - lastParamAt : null,
-      mints, fails,
+      reuseMs: REUSE_MS, mints, fails,
     }));
     return;
   }
   if (url.startsWith('/param')) {
     chain = chain.then(async () => {
       try {
-        const param = await acquireParam();
+        // 复用窗口内直接返回（ bursts 共享一发 param；上游历史接受 45s 内复用）
+        if (lastParam && Date.now() - lastParamAt < REUSE_MS) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ param: lastParam, cached: true }));
+          log(`serve cached (age=${Date.now() - lastParamAt}ms)`);
+          return;
+        }
+        const param = await mintWithRetry();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ param }));
         log(`mint ok (len=${param.length}, total=${mints})`);
