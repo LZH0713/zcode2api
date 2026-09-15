@@ -114,20 +114,25 @@ class CaptchaProvider:
     async def _watchdog(self) -> None:
         """提供器崩溃时自动拉起。"""
         chromium = shutil.which(settings.CHROMIUM_PATH) or settings.CHROMIUM_PATH
+        backoff = 5
         while not self._stopping:
-            await asyncio.sleep(5)
-            if self._proc and self._proc.returncode is None:
-                continue
+            await asyncio.sleep(backoff)
             if self._stopping:
                 return
-            logs.warn("captcha", "param 提供器退出，正在重启…")
+            alive = self._proc is not None and self._proc.returncode is None
+            if alive:
+                backoff = 5
+                continue
+            logs.warn("captcha",
+                      f"param 提供器退出（code={self._proc.returncode if self._proc else None}），正在重启…")
             self.enabled = False
             await self._spawn(chromium)
-            if await self._wait_ready():
+            if await self._wait_ready(timeout=40):
                 self.enabled = True
+                backoff = 5
                 logs.ok("captcha", "param 提供器已恢复")
             else:
-                await asyncio.sleep(10)
+                backoff = min(backoff * 2, 60)
 
     # ── 取参 ───────────────────────────────────────────────────────────────
     async def get_param(self, timeout: float = 35.0) -> str | None:

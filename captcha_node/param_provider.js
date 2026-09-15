@@ -24,8 +24,12 @@ const PORT = Number(process.env.ZCODE_CAPTCHA_PROVIDER_PORT || 3931);
 const CHROMIUM = process.env.ZCODE_CHROMIUM_PATH || 'chromium';
 const HEADFUL = (process.env.ZCODE_CAPTCHA_HEADFUL || '') === '1';
 const PAGE_HTML = require('fs').readFileSync(path.join(__dirname, 'captcha_page.html'), 'utf8');
-const PAGE_URL = `http://127.0.0.1:${PORT}/page`
-  + `?scene=${encodeURIComponent(SCENE)}&region=${encodeURIComponent(REGION)}&prefix=${encodeURIComponent(PREFIX)}`;
+const PAGE_ORIGIN = process.env.ZCODE_CAPTCHA_PAGE_ORIGIN || 'http';
+const PAGE_URL = PAGE_ORIGIN === 'file'
+  ? 'file://' + path.join(__dirname, 'captcha_page.html')
+    + `?scene=${encodeURIComponent(SCENE)}&region=${encodeURIComponent(REGION)}&prefix=${encodeURIComponent(PREFIX)}`
+  : `http://127.0.0.1:${PORT}/page`
+    + `?scene=${encodeURIComponent(SCENE)}&region=${encodeURIComponent(REGION)}&prefix=${encodeURIComponent(PREFIX)}`;
 
 const READY_TIMEOUT_MS = 40_000;
 const MINT_TIMEOUT_MS = 30_000;
@@ -45,6 +49,10 @@ let mints = 0, fails = 0;
 
 function log(...a) { console.log('[provider]', ...a); }
 function errLog(...a) { console.error('[provider]', ...a); }
+
+// 任何未捕获异常都不退出进程（退出会导致取参服务不可用，只能靠外部看门狗拉起）
+process.on('uncaughtException', (e) => errLog('uncaughtException:', (e && e.stack) || e));
+process.on('unhandledRejection', (e) => errLog('unhandledRejection:', (e && (e.stack || e.message)) || e));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -79,7 +87,7 @@ async function ensurePage() {
       args: [
         '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
         '--disable-gpu', '--disable-blink-features=AutomationControlled',
-        '--lang=zh-CN', '--window-size=1280,900',
+        '--lang=zh-CN', '--window-size=1280,900', '--disable-web-security', '--disable-site-isolation-trials',
       ],
     });
   }
@@ -153,6 +161,35 @@ const server = http.createServer((req, res) => {
       lastParamAgeMs: lastParamAt ? Date.now() - lastParamAt : null,
       reuseMs: REUSE_MS, mints, fails,
     }));
+    return;
+  }
+  if (url.startsWith('/relay')) {
+    let raw = '';
+    req.on('data', (c) => { raw += c; });
+    req.on('end', () => {
+      chain = chain.then(async () => {
+        try {
+          const spec = JSON.parse(raw || '{}');
+          const param = await mintWithRetry();
+          const pg = await ensurePage();
+          const upstream = await pg.evaluate(async (spec, param) => {
+            const headers = { ...spec.headers, 'X-Aliyun-Captcha-Verify-Param': param };
+            const res = await fetch(spec.url, { method: 'POST', headers, body: spec.body });
+            const text = await res.text();
+            return { status: res.status, text: text.slice(0, 4000) };
+          }, spec, param);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ param_len: param.length, ...upstream }));
+          log(`relay done status=${upstream.status}`);
+        } catch (e) {
+          errLog('relay failed:', e.message);
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: e.message }));
+          try { if (page && !page.isClosed()) await page.close(); } catch {}
+          page = null;
+        }
+      }).catch(() => {});
+    });
     return;
   }
   if (url.startsWith('/param')) {
