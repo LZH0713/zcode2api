@@ -49,6 +49,7 @@ function startChrome() {
     }
   }
   const args = [
+    '--no-sandbox', '--disable-setuid-sandbox',
     `--user-data-dir=${PROFILE_DIR || '/tmp/captcha-profile'}`,
     '--no-first-run', '--no-default-browser-check',
     '--disable-dev-shm-usage', '--lang=zh-CN', '--window-size=1280,900',
