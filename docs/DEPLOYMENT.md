@@ -64,20 +64,28 @@ curl -sS http://127.0.0.1:3010/admin/login
 ## 验证码架构（2026-09 重构）与已知阻塞
 
 阿里云 2026-06 起升级风控，**jsdom 求解器 100% 被拒（F001）**，已改为主路径
-**Chromium param 提供器**（`captcha_node/param_provider.js`）：容器内 Xvfb 虚拟屏 +
-有头 Chromium 运行官方无痕 SDK（headless 会被 F001 拒绝），本地 HTTP `/param`
-提供一次性 verifyParam，带复用窗口（45s）/失败延迟重试/持久 profile，Python 侧
-看门狗自动重启，jsdom 求解器仅作兜底。取参耗时约 5-20s（数据中心 IP 约 60-90s
-放行一发，阿里云侧节奏限制）。
+**Chromium param 提供器 v2**（`captcha_node/param_provider.js`）：容器内 Xvfb 虚拟屏 +
+**零 CDP** 有头 Chromium（不使用 puppeteer —— CDP 连接会被风控识别为自动化环境，
+既触发 F001 节流又拉高验证结果的风险分）打开工作页 `captcha_page.html`，页面自循环
+「init SDK → 无痕验证 → POST /report 上报 param → 刷新重 init」（对齐 App 每次
+验证前重 init 的语义），param 按 45s 复用窗口供给网关，Chromium 崩溃自动重启
+（启动前清理 profile 遗留锁）。jsdom 求解器仅作兜底。实测零 CDP 模式下无 F001
+节流，param 持续稳定产出（每 ~60s 一发）。
 
-实测结论（2026-09-16）：
-- 提供器产出的 param **真实有效**（上游 3007=无效/缺失，3012=验证码已通过但被业务风控拦）
-- `billing/*`（额度/预览）接口全部正常；**仅 `/v1/messages` 返回 3012 unusual activity**
-- 3012 与以下因素均无关（逐一排除）：请求头（已完整复刻 App `withZCodeSourceHeaders`）、
-  X-Device-Mid（真实设备/服务器随机均试）、IP 类型（家宽/机房均试）、TLS 指纹
-  （真 Chrome fetch 转发仍 3012）、origin（file:// 与 http 均试）、请求体画像
-  （stream+system+metadata 均试）、账号（两账号均复现）、App 版本（3.11.2 完全一致）
-- 剩余嫌疑：池内 JWT 经 `oauth/cli` 流签发，与 App 的 web OAuth 会话绑定存在差异；
-  或活动账号的消息通道被上游整体门禁
-- 下一步排查：用 ZCode 桌面 App 直接登录池内账号试发消息（判定账号级门禁 vs
-  签发通道差异）；若为后者，需实现 web 流 OAuth + Cookie 捕获并随请求携带
+### 3012 阻塞（上游账号级风控，2026-09-16 排查结论）
+
+`/v1/zcode-plan/anthropic/v1/messages` 对池内账号返回 `3012 unusual activity`。
+
+- 验证码层已完全打通：干净 param 通过上游验证（3007=参数无效/缺失，3012=验证已过但业务风控拦截）
+- 已逐一排除所有请求侧变量：请求头（完整复刻 App `withZCodeSourceHeaders` +
+  归因头 `x-session-id/x-query-id/x-zcode-trace-id/x-zcode-session-type`）、
+  X-Device-Mid、IP 类型（家宽/机房）、TLS（curl/Node undici/真 Chrome）、origin、
+  Cookie、请求体画像、App 版本（3.11.2）、param 质量（零 CDP 干净浏览器）
+- **关键发现**：App 存在客户端请求签名机制（Ed25519 + PoW，头 `X-Client-Sig/
+  X-Client-Pow/X-Client-Nonce/X-App-Id`，握手端点 `/api/paas/c1f3a7e2/v2/client`，
+  算法已完整逆向记录于代码评审记录），签名凭证为 `apiKeyId.apiKeySecret` 形态，
+  但该凭证只随官方 App 的登录通道下发；当前 App 调握手路径返回 404 → 失败放行
+  （fail-open 发未签名请求），说明服务端按「官方客户端会话」信用放行
+- 池内账号曾经历长时间 3012 失败请求，账号风险分已被推高。**建议静置 24-48h 后
+  重试**（网关现在具备干净 param + 全对齐请求头）；billing/preview 等额度接口
+  不受影响，Start Plan 额度仍在有效期内
