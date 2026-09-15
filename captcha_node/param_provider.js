@@ -32,6 +32,7 @@ const PAGE_HTML = fs.readFileSync(path.join(__dirname, 'captcha_page.html'), 'ut
   .replace(`Number(Q.get('reload') || 60000)`, `Number(Q.get('reload') || ${RELOAD_DELAY_MS})`);
 
 let lastParam = null, lastParamAt = 0;
+let lastParamServed = false;            // param 单次使用：发过后不再重复供给
 let mints = 0, fails = 0;
 let chrome = null;
 
@@ -89,6 +90,7 @@ const server = http.createServer((req, res) => {
         if (url.includes('ok=1') && d.param) {
           lastParam = String(d.param);
           lastParamAt = Date.now();
+          lastParamServed = false;   // 新 param 到达，可再次供给
           mints += 1;
           log(`report ok (len=${lastParam.length}, total=${mints})`);
         } else {
@@ -110,14 +112,33 @@ const server = http.createServer((req, res) => {
   }
   if (url.startsWith('/param')) {
     const age = lastParamAt ? Date.now() - lastParamAt : Infinity;
-    if (lastParam && age < MAX_AGE_MS) {
+    const fresh = lastParam && age < MAX_AGE_MS && !lastParamServed;
+    if (fresh) {
+      // 单次使用语义：发出去即标记，网关重试时会等待下一发新 param
+      lastParamServed = true;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ param: lastParam, ageMs: age }));
       log(`serve param (age=${age}ms)`);
     } else {
-      // param 过期：告知调用方稍后再取（页面循环会在下轮上报）
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'param expired', ageMs: Number.isFinite(age) ? age : null }));
+      // 等待页面下一轮上报（约 RELOAD_DELAY_MS 周期），期间持有请求
+      const startedAt = Date.now();
+      const deadline = startedAt + 90_000;
+      const wait = () => {
+        if (lastParamAt > startedAt && !lastParamServed) {
+          lastParamServed = true;
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ param: lastParam, ageMs: Date.now() - lastParamAt }));
+          log(`serve new param (total=${mints})`);
+          return;
+        }
+        if (Date.now() > deadline) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'no fresh param within 90s' }));
+          return;
+        }
+        setTimeout(wait, 1000);
+      };
+      wait();
     }
     return;
   }
