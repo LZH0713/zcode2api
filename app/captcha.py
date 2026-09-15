@@ -64,6 +64,19 @@ class CaptchaManager:
             self._cached_at = time.time() * 1000
             return param
 
+    async def solve_fresh(self) -> tuple[str, dict]:
+        """求解一个全新的 verifyParam（不读缓存），返回 (param, captcha配置)。
+
+        供活动领取等一次性场景使用：每个账号每次领取都应携带独立的验证结果。
+        求解结果同时写入缓存，供后续网关请求顺带复用。
+        """
+        async with self._lock:
+            config = await self.fetch_config()
+            param = await self._solve(config)
+            self._cached = param
+            self._cached_at = time.time() * 1000
+            return param, config
+
     async def _solve(self, config: dict) -> str:
         scene = config.get("sceneId") or "11xygtvd"
         region = config.get("region") or "sgp"

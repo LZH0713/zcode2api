@@ -8,6 +8,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
 from ..auth_admin import verify_admin_key
+from ..claim import claim_account, claim_accounts, preview_plans
 from ..models import PROVIDERS, Status
 from ..oauth import ZaiAuthFlow
 from ..quota import fetch_quota, refresh_accounts
@@ -157,6 +158,47 @@ async def refresh_one(account_id: str):
         return {"ok": False, "message": "仅 Coding Plan (JWT) 账号支持额度查询"}
     res = await fetch_quota(acc)
     return {"ok": "error" not in res, "result": res, "account": acc.public_view()}
+
+
+# ── 活动领取 ─────────────────────────────────────────────────────────────────
+@router.get("/accounts/{account_id}/claim/preview")
+async def account_claim_preview(account_id: str):
+    """查看账号当前可领取的活动套餐。"""
+    acc = store.find_any(account_id)
+    if not acc:
+        raise HTTPException(404, "账号不存在")
+    if acc.mode != "jwt":
+        raise HTTPException(400, "仅 Coding Plan (JWT) 账号支持领取活动")
+    try:
+        plans = await preview_plans(acc)
+    except RuntimeError as err:
+        raise HTTPException(502, str(err))
+    return {"plans": plans, "account": acc.public_view()}
+
+
+@router.post("/accounts/{account_id}/claim")
+async def account_claim(account_id: str, payload: dict = Body(default=None)):
+    """领取单个账号的活动额度（自动预览 + 人机验证 + 领取 + 刷新额度）。"""
+    acc = store.find_any(account_id)
+    if not acc:
+        raise HTTPException(404, "账号不存在")
+    result = await claim_account(acc, (payload or {}).get("plan_id"))
+    return {**result, "account": acc.public_view()}
+
+
+@router.post("/accounts/claim")
+async def claim_batch(payload: dict = Body(default=None)):
+    """批量领取：{all: true} 或 {ids: [...]}，仅对 JWT 账号生效。"""
+    payload = payload or {}
+    if payload.get("all"):
+        targets = [a for a in store.list_accounts("zai")
+                   if a.mode == "jwt" and a.status != Status.DISABLED]
+    else:
+        ids = set(payload.get("ids") or [])
+        targets = [a for a in store.list_accounts() if a.id in ids and a.mode == "jwt"]
+    summary = await claim_accounts(targets)
+    return {"summary": {k: v for k, v in summary.items() if k != "results"},
+            "results": summary.get("results") or [], "count": len(targets)}
 
 
 # ── OAuth 登录（Z.AI）────────────────────────────────────────────────────────

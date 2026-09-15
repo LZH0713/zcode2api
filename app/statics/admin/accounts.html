@@ -30,6 +30,10 @@
         <svg width="14" height="14" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" fill="none"><path d="M20 11a8 8 0 0 0-14.6-4.6"/><path d="M4 4v5h5"/><path d="M4 13a8 8 0 0 0 14.6 4.6"/><path d="M20 20v-5h-5"/></svg>
         刷新额度
       </button>
+      <button onclick="claimAll()" class="page-action-btn" id="btn-claim-all">
+        <svg width="14" height="14" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" fill="none"><polyline points="20 12 20 22 4 22 4 12"/><rect x="2" y="7" width="20" height="5"/><line x1="12" y1="22" x2="12" y2="7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/></svg>
+        领取活动
+      </button>
       <button onclick="openAdd()" class="page-action-btn page-action-btn-primary">
         <svg width="14" height="14" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" fill="none"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         新增
@@ -62,7 +66,7 @@
         <th class="table-center" style="width:60px">调用</th>
         <th class="table-center" style="width:60px">失败</th>
         <th style="width:120px">最近使用</th>
-        <th style="width:168px">操作</th>
+        <th style="width:196px">操作</th>
       </tr></thead>
       <tbody id="tbody"></tbody>
     </table>
@@ -155,6 +159,7 @@
 <script>
 let allAccounts=[], curFilter='all', _cb=null, _editId='', _timer=null;
 const refreshing=new Set();
+const claiming=new Set();
 
 const STATUS_LABEL={active:'正常',exhausted:'用完',cooling:'限流',invalid:'异常',disabled:'禁用'};
 
@@ -224,7 +229,8 @@ function rowHtml(a){
     <td class="table-center" style="color:#9a9a9a">${a.fail_count||0}</td>
     <td style="font-size:12px;color:#9a9a9a">${fmtDate(a.last_used_at)}</td>
     <td><div class="row-actions">
-      ${isJwt?`<button onclick="refreshOne('${a.id}')" class="row-icon-btn${loading?' is-loading':''}" title="刷新额度"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.6-4.6"/><path d="M4 4v5h5"/><path d="M4 13a8 8 0 0 0 14.6 4.6"/><path d="M20 20v-5h-5"/></svg></button>`:''}
+      ${isJwt?`<button onclick="refreshOne('${a.id}')" class="row-icon-btn${loading?' is-loading':''}" title="刷新额度"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.6-4.6"/><path d="M4 4v5h5"/><path d="M4 13a8 8 0 0 0 14.6 4.6"/><path d="M20 20v-5h-5"/></svg></button>
+      <button onclick="claimOne('${a.id}')" class="row-icon-btn${claiming.has(a.id)?' is-loading':''}" title="领取活动额度"><svg viewBox="0 0 24 24"><polyline points="20 12 20 22 4 22 4 12"/><rect x="2" y="7" width="20" height="5"/><line x1="12" y1="22" x2="12" y2="7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/></svg></button>`:''}
       <button onclick="copyToken('${a.id}')" class="row-icon-btn" title="复制 Token"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"/></svg></button>
       <button onclick="toggleEnabled('${a.id}',${isDisabled})" class="row-icon-btn" title="${isDisabled?'恢复':'禁用'}">
         ${isDisabled?'<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.708"/><path d="M3 4v5h5"/></svg>':'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M8.5 8.5 15.5 15.5"/></svg>'}
@@ -385,6 +391,33 @@ async function refreshAll(){
   showToast('正在刷新全部额度…','info');
   try{const d=await api('POST','/accounts/refresh',{all:true});showToast(`刷新完成：成功 ${d.summary.ok}，失败 ${d.summary.fail}`,'success');load();}
   catch(e){showToast('刷新失败: '+e.message,'error');}
+}
+
+/* ── 领取活动 ── */
+function claimTone(state){return state==='claimed'?'success':(state==='none'?'info':'error');}
+async function claimOne(id){
+  if(claiming.has(id))return;
+  claiming.add(id);renderTable();
+  showToast('正在检查可领活动并领取…','info');
+  try{
+    const d=await api('POST','/accounts/'+id+'/claim');
+    showToast(d.message||'领取完成',claimTone(d.state));
+  }catch(e){showToast('领取失败: '+e.message,'error');}
+  finally{claiming.delete(id);await load();}
+}
+function claimAll(){
+  const n=allAccounts.filter(a=>a.mode==='jwt'&&a.status!=='disabled').length;
+  if(!n)return showToast('没有可领取活动的 JWT 账号','error');
+  openConfirm('领取活动',`将对 <b>${n}</b> 个 JWT 账号依次检查可领活动并尝试领取（每个账号需通过一次人机验证，可能耗时较长）。`,async()=>{
+    showToast('正在领取活动…','info');
+    try{
+      const d=await api('POST','/accounts/claim',{all:true});
+      const s=d.summary||{};
+      const tone=s.claimed>0?'success':((s.failed||0)>0?'error':'info');
+      showToast(`领取完成：成功 ${s.claimed||0}，无可领 ${s.none||0}，失败 ${s.failed||0}`,tone);
+      load();
+    }catch(e){showToast('领取失败: '+e.message,'error');}
+  });
 }
 
 async function doExport(){

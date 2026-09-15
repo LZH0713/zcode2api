@@ -82,4 +82,4 @@ UPSTREAM = {
 ZCODE_BILLING_BASE = "https://zcode.z.ai/api/v1/zcode-plan"
 
 USER_AGENT = os.getenv("UPSTREAM_USER_AGENT", "ZCode/3.0.1")
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"

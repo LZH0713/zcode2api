@@ -89,14 +89,15 @@ graph TD
 | App Factory | `app/main.py` | FastAPI 应用工厂 + 生命周期(启动监控、打印 banner、挂载路由/静态资源) |
 | CLI | `main.py`(根) | 命令行入口:`serve` / `login` / `add-account` / `quota` / `export` … |
 | Gateway 网关 | `app/routes/gateway.py` | `/v1/messages`(轮询+换号+验证码续期+SSE 透传)、`/v1/models` |
-| Admin API | `app/routes/admin_api.py` | `/admin/api/*`:账号增删改、启用禁用、刷新额度、OAuth、设置、导入导出 |
+| Admin API | `app/routes/admin_api.py` | `/admin/api/*`:账号增删改、启用禁用、刷新额度、活动领取、OAuth、设置、导入导出 |
 | Pages | `app/routes/pages.py` | 后台页面(login / accounts / settings)与重定向 |
 | Auth 鉴权 | `app/auth_admin.py` | `verify_admin_key`(后台)、`verify_gateway_key`(网关,可选) |
 | Account Store | `app/store.py` | SQLite 持久化 + 内存账号表 + round-robin 游标 + 设置(meta) |
 | Account Model | `app/models.py` | `Account` 数据类、`Status` 状态、可选中判定、脱敏视图 |
 | Request Builder | `app/agent.py` | 按凭证选上游端点、组装请求头(含 `X-Aliyun-Captcha-Verify-Param`) |
 | Quota Monitor | `app/quota.py` | 单账号额度查询 + 状态判定 + 后台周期刷新任务 |
-| Captcha Manager | `app/captcha.py` | 拉取验证码配置、调用 Node 求解器、缓存/并发去重/重试 |
+| Activity Claim | `app/claim.py` | 活动额度领取：`billing/preview` 预览 → 复用求解器过验证 → `billing/claim` 领取 → 刷新额度 |
+| Captcha Manager | `app/captcha.py` | 拉取验证码配置、调用 Node 求解器、缓存/并发去重/重试（`solve_fresh` 供领取每次取新验证码） |
 | Captcha Solver | `captcha_node/solver.js` | jsdom 模拟浏览器跑阿里云无痕 SDK,输出 `verifyParam` |
 | OAuth Flow | `app/oauth.py` | Z.AI OAuth:init → poll → 兑换 API Key |
 | Settings | `app/settings.py` | 环境变量 / 默认值 / 路径 / 上游端点 |
@@ -281,6 +282,7 @@ meta(      key PK, value )      # admin_key / gateway_key / quota_refresh_interv
 │   ├── store.py           # SQLite 持久化 + 轮询游标
 │   ├── agent.py           # Request Builder
 │   ├── captcha.py         # Captcha Manager
+│   ├── claim.py           # Activity Claim（活动额度领取）
 │   ├── quota.py           # Quota Monitor
 │   ├── oauth.py           # OAuth Flow
 │   ├── auth_admin.py      # 鉴权依赖

@@ -60,7 +60,7 @@ docker run -d --name zcode2api -p 3000:3000 \
 | 页面 | 说明 |
 |------|------|
 | `/admin/login` | 后台登录（Bearer 密钥鉴权，凭证加密存于浏览器 localStorage）|
-| `/admin/accounts` | 账号池：新增/导入/导出、启用禁用、**实时额度与状态监控**（每 5 秒刷新）|
+| `/admin/accounts` | 账号池：新增/导入/导出、启用禁用、**实时额度与状态监控**（每 5 秒刷新）、**一键领取活动额度** |
 | `/admin/settings` | 后台密码、网关 API Key |
 
 账号池页实时展示每个账号的状态（正常 / 额度用完 / 限流 / 异常 / 禁用）、各模型剩余额度、
@@ -73,6 +73,23 @@ docker run -d --name zcode2api -p 3000:3000 \
 - 命中额度用完信号（余额为 0、上游 402、错误体含 quota/余额 等）→ 标记 `exhausted` 并换下一个账号。
 - 上游 429 → 标记 `cooling` 冷却一段时间后自动恢复；401/403（非验证码）→ 标记 `invalid`。
 - 后台任务按 `ZCODE_QUOTA_REFRESH_INTERVAL` 周期刷新各账号额度；也可在 UI 手动刷新。
+
+## 活动额度领取
+
+账号池页支持一键领取 ZCode 官方活动额度（如新用户赠送 Token）：
+
+- **页面按钮**：右上角「领取活动」对全部 JWT 账号批量执行；每行的 🎁 图标对单个账号领取。
+  领取成功后会自动刷新该账号额度，新入账的额度立即在列表中可见。
+- **协议链路**（借鉴 [zcode-claim](https://github.com/LZH0713/zcode-claim)）：
+  1. `GET /api/v1/zcode-plan/billing/preview` 查询当前可领的活动套餐（无可领则跳过并提示原因）；
+  2. 复用本项目无浏览器验证码求解器（`app/captcha.py` + `captcha_node/solver.js`）求得阿里云无痕验证
+     `verifyParam`，**全程无需人工点击**；每个账号每次领取使用独立求解的新验证码；
+  3. `POST /api/v1/zcode-plan/billing/claim`（携带 `X-Aliyun-Captcha-Verify-Param/-Region` 等来源头）完成领取；
+  4. 领取结果按上游错误码给出可读提示（已领取 / 不符合条件 / 名额发完 / 登录态失效等）。
+- **后台 API**：`GET /admin/api/accounts/{id}/claim/preview`、
+  `POST /admin/api/accounts/{id}/claim`、`POST /admin/api/accounts/claim`（批量）。
+
+> 领取资格由上游判定（如仅限新用户），不符合条件时会明确提示；登录态失效的账号会被标记为 `invalid`。
 
 ## 鉴权
 
@@ -136,6 +153,7 @@ python main.py export [file] / import <file>       # 导出 / 导入账号
 │   ├── store.py           # SQLite 持久化 + 轮询游标（data/accounts.db）
 │   ├── agent.py           # 上游请求构建
 │   ├── captcha.py         # 无痕验证求解（调用 Node 求解器）
+│   ├── claim.py           # 活动额度领取（preview → 验证码 → claim）
 │   ├── quota.py           # 额度查询 + 后台用量监控
 │   ├── oauth.py           # Z.AI OAuth 登录流程
 │   ├── auth_admin.py      # 后台 / 网关鉴权
