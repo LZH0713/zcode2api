@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -83,3 +84,11 @@ ZCODE_BILLING_BASE = "https://zcode.z.ai/api/v1/zcode-plan"
 
 USER_AGENT = os.getenv("UPSTREAM_USER_AGENT", "ZCode/3.0.1")
 APP_VERSION = "2.1.0"
+
+# ZCode 客户端版本与平台标识（billing / client-configs 等接口的来源参数；
+# 旧版本参数（如 3.0.0+win32）已被上游 client/configs 拒绝返回 400）
+ZCODE_CLIENT_VERSION = "3.11.2"
+try:
+    PLATFORM = f"{sys.platform}-{os.uname().machine}"
+except (AttributeError, OSError):  # 非 POSIX 平台兜底
+    PLATFORM = sys.platform or "unknown"

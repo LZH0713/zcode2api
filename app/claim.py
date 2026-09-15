@@ -11,7 +11,6 @@ X-Platform 等来源头（billing 缺它们会报 3001 parameter error）。
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import time
 import uuid
@@ -23,8 +22,6 @@ from .captcha import captcha_manager
 from .models import Account, Status
 from .quota import _device_mid, fetch_quota
 from .store import store
-
-CLAIM_APP_VERSION = "3.11.2"
 
 # 上游 claim 错误码 → 可读文案
 CLAIM_ERR = {
@@ -39,13 +36,6 @@ CLAIM_ERR = {
 }
 
 
-def _platform() -> str:
-    try:
-        return f"{sys.platform}-{os.uname().machine}"
-    except (AttributeError, OSError):  # 非 POSIX 平台兜底
-        return sys.platform or "unknown"
-
-
 def _os_category() -> str:
     if sys.platform == "darwin":
         return "macos"
@@ -57,11 +47,11 @@ def _source_headers(account: Account, extra: dict | None = None) -> dict:
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "User-Agent": f"ZCode/{CLAIM_APP_VERSION}",
+        "User-Agent": f"ZCode/{settings.ZCODE_CLIENT_VERSION}",
         "HTTP-Referer": "https://zcode.z.ai",
         "X-Title": "Z Code@electron",
-        "X-ZCode-App-Version": CLAIM_APP_VERSION,
-        "X-Platform": _platform(),
+        "X-ZCode-App-Version": settings.ZCODE_CLIENT_VERSION,
+        "X-Platform": settings.PLATFORM,
         "X-Client-Language": "zh-CN",
         "X-Client-Timezone": "Asia/Shanghai",
         "X-Os-Category": _os_category(),
@@ -94,7 +84,7 @@ async def preview_plans(account: Account) -> list[dict]:
     async with httpx.AsyncClient(timeout=20) as client:
         res = await client.get(
             f"{settings.ZCODE_BILLING_BASE}/billing/preview",
-            params={"app_version": CLAIM_APP_VERSION, "platform": _platform()},
+            params={"app_version": settings.ZCODE_CLIENT_VERSION, "platform": settings.PLATFORM},
             headers=_source_headers(account),
         )
 
