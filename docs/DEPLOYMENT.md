@@ -60,3 +60,24 @@ curl -sS http://127.0.0.1:3010/admin/login
 ```
 
 更新前不要删除 `/opt/zcode2api/data`，其中包含账号数据库及设备标识。
+
+## 验证码架构（2026-09 重构）与已知阻塞
+
+阿里云 2026-06 起升级风控，**jsdom 求解器 100% 被拒（F001）**，已改为主路径
+**Chromium param 提供器**（`captcha_node/param_provider.js`）：容器内 Xvfb 虚拟屏 +
+有头 Chromium 运行官方无痕 SDK（headless 会被 F001 拒绝），本地 HTTP `/param`
+提供一次性 verifyParam，带复用窗口（45s）/失败延迟重试/持久 profile，Python 侧
+看门狗自动重启，jsdom 求解器仅作兜底。取参耗时约 5-20s（数据中心 IP 约 60-90s
+放行一发，阿里云侧节奏限制）。
+
+实测结论（2026-09-16）：
+- 提供器产出的 param **真实有效**（上游 3007=无效/缺失，3012=验证码已通过但被业务风控拦）
+- `billing/*`（额度/预览）接口全部正常；**仅 `/v1/messages` 返回 3012 unusual activity**
+- 3012 与以下因素均无关（逐一排除）：请求头（已完整复刻 App `withZCodeSourceHeaders`）、
+  X-Device-Mid（真实设备/服务器随机均试）、IP 类型（家宽/机房均试）、TLS 指纹
+  （真 Chrome fetch 转发仍 3012）、origin（file:// 与 http 均试）、请求体画像
+  （stream+system+metadata 均试）、账号（两账号均复现）、App 版本（3.11.2 完全一致）
+- 剩余嫌疑：池内 JWT 经 `oauth/cli` 流签发，与 App 的 web OAuth 会话绑定存在差异；
+  或活动账号的消息通道被上游整体门禁
+- 下一步排查：用 ZCode 桌面 App 直接登录池内账号试发消息（判定账号级门禁 vs
+  签发通道差异）；若为后者，需实现 web 流 OAuth + Cookie 捕获并随请求携带
