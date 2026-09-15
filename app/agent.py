@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 from . import settings
 from .models import Account
 
@@ -19,6 +21,9 @@ _DROP_HEADERS = {
     "accept-encoding",
     "connection",
 }
+
+# 会话归因命名空间：同账号稳定派生 session id（对齐 App 行为画像）
+_SESSION_NS = uuid.UUID("6f1e2c3a-9b7d-4e8f-a1c2-3d4e5f6a7b8c")
 
 
 def build_request(
@@ -55,6 +60,12 @@ def build_request(
         "X-ZCode-App-Version": "3.0.1",
         "X-ZCode-Agent": "glm",
         "HTTP-Referer": "https://zcode.z.ai/",
+        # 会话归因头（对齐官方 App：同账号稳定 session、每请求独立 query/trace）
+        "x-request-id": str(uuid.uuid4()),
+        "x-zcode-trace-id": str(uuid.uuid4()),
+        "x-query-id": str(uuid.uuid4()),
+        "x-session-id": str(uuid.uuid5(_SESSION_NS, f"{account.provider}:{account.id}")),
+        "x-zcode-session-type": "main",
     }
     if verify_param:
         headers["X-Aliyun-Captcha-Verify-Param"] = verify_param

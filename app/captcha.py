@@ -135,19 +135,24 @@ class CaptchaProvider:
                 backoff = min(backoff * 2, 60)
 
     # ── 取参 ───────────────────────────────────────────────────────────────
-    async def get_param(self, timeout: float = 35.0) -> str | None:
-        """现解一发新 param；提供器未启用或失败返回 None。"""
+    async def get_param(self, timeout: float = 75.0) -> str | None:
+        """取一发 param。提供器页面按节奏自循环上报，param 过期时短暂等待下一轮。"""
         if not self.enabled:
             return None
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                res = await client.get(f"{settings.CAPTCHA_PROVIDER_URL}/param")
-            if res.status_code == 200:
-                return res.json().get("param")
-            logs.warn("captcha", f"提供器取参失败 HTTP {res.status_code}")
-        except Exception as err:  # noqa: BLE001
-            logs.warn("captcha", f"提供器取参异常: {err}")
-        return None
+        deadline = time.time() + timeout
+        while True:
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    res = await client.get(f"{settings.CAPTCHA_PROVIDER_URL}/param")
+                if res.status_code == 200:
+                    return res.json().get("param")
+            except Exception as err:  # noqa: BLE001
+                logs.warn("captcha", f"提供器取参异常: {err}")
+                return None
+            if time.time() + 8 >= deadline:
+                logs.warn("captcha", f"提供器取参失败 HTTP {res.status_code}")
+                return None
+            await asyncio.sleep(8)
 
 
 class CaptchaManager:

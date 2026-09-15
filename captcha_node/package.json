@@ -2,11 +2,10 @@
   "name": "zcode2api-captcha-solver",
   "version": "1.0.0",
   "private": true,
-  "description": "阿里云无痕验证：jsdom 求解器（兜底）+ Chromium param 提供器（主）",
+  "description": "阿里云无痕验证：Chromium param 提供器（主）+ jsdom 求解器（兜底）",
   "type": "commonjs",
   "main": "solver.js",
   "dependencies": {
-    "jsdom": "^24.1.0",
-    "puppeteer-core": "^23.11.1"
+    "jsdom": "^24.1.0"
   }
 }

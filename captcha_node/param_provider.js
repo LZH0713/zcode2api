@@ -1,220 +1,117 @@
 /**
- * ZCode 验证码 param 提供器（常驻）。
+ * ZCode 验证码 param 提供器 v2（零自动化痕迹）。
  *
- * 用真实 Chromium（headless，与 ZCode App 同款引擎）运行阿里云无痕验证 SDK，
- * 通过本地 HTTP 接口向网关提供一次性 verifyParam：
+ * 不用 puppeteer/CDP（CDP 连接会被阿里云风控识别，导致验证结果的 risk score 偏高、
+ * 上游以 3012 拒绝）。改为直接启动有头 Chromium（Xvfb 虚拟屏）打开工作页：
+ * 页面自行循环「init SDK → 无痕验证 → 把 param POST 回 /report → 刷新重 init」，
+ * 与 ZCode App 行为一致（每次验证前重 init、param 一次性使用）。
  *
- *   GET /health  → {ok, ready, lastParamAgeMs, mints, fails}
- *   GET /param   → 现解一发新 param（对齐 App「每次发送前现解、用后即弃」语义，约 3-5s）
- *
- * 请求串行执行；页面/浏览器异常自动重建。验证码 scene/region/prefix 从 client/configs
- * 拉取后由调用方（app/captcha.py）在启动参数里传入。
+ *   GET /health  → {ok, ready, paramAgeMs, mints, fails}
+ *   GET /param   → 返回最新 param（超过 maxAge 视为过期，等待下一次上报）
  *
  * 用法: node param_provider.js <scene> <region> <prefix>
  */
 
 const path = require('path');
+const fs = require('fs');
 const http = require('http');
-const puppeteer = require('puppeteer-core');
+const { spawn } = require('child_process');
 
 const SCENE = process.argv[2] || '11xygtvd';
 const REGION = process.argv[3] || 'sgp';
 const PREFIX = process.argv[4] || 'no8xfe';
 const PORT = Number(process.env.ZCODE_CAPTCHA_PROVIDER_PORT || 3931);
 const CHROMIUM = process.env.ZCODE_CHROMIUM_PATH || 'chromium';
-const HEADFUL = (process.env.ZCODE_CAPTCHA_HEADFUL || '') === '1';
-const PAGE_HTML = require('fs').readFileSync(path.join(__dirname, 'captcha_page.html'), 'utf8');
-const PAGE_ORIGIN = process.env.ZCODE_CAPTCHA_PAGE_ORIGIN || 'http';
-const PAGE_URL = PAGE_ORIGIN === 'file'
-  ? 'file://' + path.join(__dirname, 'captcha_page.html')
-    + `?scene=${encodeURIComponent(SCENE)}&region=${encodeURIComponent(REGION)}&prefix=${encodeURIComponent(PREFIX)}`
-  : `http://127.0.0.1:${PORT}/page`
-    + `?scene=${encodeURIComponent(SCENE)}&region=${encodeURIComponent(REGION)}&prefix=${encodeURIComponent(PREFIX)}`;
-
-const READY_TIMEOUT_MS = 40_000;
-const MINT_TIMEOUT_MS = 30_000;
-// IP 信誉节奏：数据中心 IP 上无痕验证约每 60-90s 只放行一发；
-// 在复用窗口内直接返回上一个 param（上游历史上接受 45s 内复用），F001 后延迟重试
-const REUSE_MS = Number(process.env.ZCODE_CAPTCHA_PARAM_REUSE_MS || 45_000);
-const FAIL_RETRY_DELAY_MS = Number(process.env.ZCODE_CAPTCHA_FAIL_RETRY_MS || 20_000);
 const PROFILE_DIR = process.env.ZCODE_CAPTCHA_PROFILE_DIR || '';
+// param 有效窗口：超过该年龄不出参（等待页面下一轮上报）
+const MAX_AGE_MS = Number(process.env.ZCODE_CAPTCHA_PARAM_MAX_AGE_MS || 70_000);
+// 页面每轮验证后的刷新间隔（注入到工作页）
+const RELOAD_DELAY_MS = Number(process.env.ZCODE_CAPTCHA_REFRESH_MS || 55_000);
 
-let browser = null;
-let page = null;
-let ready = false;
-let chain = Promise.resolve();          // 串行化每次验证
-let pageUsed = false;                   // SDK 实例一次验证后即失效，需重载页面重新 init
+const PAGE_HTML = fs.readFileSync(path.join(__dirname, 'captcha_page.html'), 'utf8')
+  .replace(`Number(Q.get('reload') || 60000)`, `Number(Q.get('reload') || ${RELOAD_DELAY_MS})`);
+
 let lastParam = null, lastParamAt = 0;
 let mints = 0, fails = 0;
+let chrome = null;
 
 function log(...a) { console.log('[provider]', ...a); }
 function errLog(...a) { console.error('[provider]', ...a); }
 
-// 任何未捕获异常都不退出进程（退出会导致取参服务不可用，只能靠外部看门狗拉起）
 process.on('uncaughtException', (e) => errLog('uncaughtException:', (e && e.stack) || e));
 process.on('unhandledRejection', (e) => errLog('unhandledRejection:', (e && (e.stack || e.message)) || e));
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-async function openPage() {
-  page = await browser.newPage();
-  await page.evaluateOnNewDocument(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+function startChrome() {
+  const args = [
+    `--user-data-dir=${PROFILE_DIR || '/tmp/captcha-profile'}`,
+    '--no-first-run', '--no-default-browser-check',
+    '--disable-dev-shm-usage', '--lang=zh-CN', '--window-size=1280,900',
+    `http://127.0.0.1:${PORT}/page?scene=${encodeURIComponent(SCENE)}&region=${encodeURIComponent(REGION)}&prefix=${encodeURIComponent(PREFIX)}&reload=${RELOAD_DELAY_MS}`,
+  ];
+  log('launch chromium:', CHROMIUM);
+  chrome = spawn(CHROMIUM, args, { stdio: 'ignore' });
+  chrome.on('exit', (code) => {
+    errLog('chromium exited code=' + code + ', restarting in 5s');
+    chrome = null;
+    setTimeout(startChrome, 5000);
   });
-  await page.goto(PAGE_URL, { waitUntil: 'domcontentloaded', timeout: READY_TIMEOUT_MS });
-  await page.waitForFunction('window.__ready === true', { timeout: READY_TIMEOUT_MS, polling: 200 });
-  pageUsed = false;
-  log('page ready');
-  return page;
-}
-
-async function ensurePage() {
-  if (browser && page && !page.isClosed()) {
-    // 对齐 ZCode App 行为（每次验证前 IX() 重置重 init）：用过的页面重载换新 SDK 实例
-    if (!pageUsed) return page;
-    try { await page.close(); } catch {}
-    page = null;
-  } else if (browser) {
-    try { await browser.close(); } catch {}
-    browser = null; page = null;
-  }
-  if (!browser) {
-    log('launch chromium:', CHROMIUM);
-    browser = await puppeteer.launch({
-      executablePath: CHROMIUM,
-      headless: !HEADFUL,   // 阿里云风控识别 headless（F001），默认有头 + Xvfb 虚拟屏
-      ...(PROFILE_DIR ? { userDataDir: PROFILE_DIR } : {}),  // 持久 profile 攒设备信誉
-      args: [
-        '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
-        '--disable-gpu', '--disable-blink-features=AutomationControlled',
-        '--lang=zh-CN', '--window-size=1280,900', '--disable-web-security', '--disable-site-isolation-trials',
-      ],
-    });
-  }
-  return openPage();
-}
-
-async function mintWithRetry() {
-  try {
-    const param = await acquireParam();
-    return param;
-  } catch (e) {
-    // F001 多为 IP 节奏限制：等待后重开页面再试一次
-    errLog(`mint failed (${e.message}); retry in ${FAIL_RETRY_DELAY_MS}ms`);
-    try { if (page && !page.isClosed()) await page.close(); } catch {}
-    page = null;
-    await sleep(FAIL_RETRY_DELAY_MS);
-    return acquireParam();
-  }
-}
-
-async function mint(pg) {
-  await pg.evaluate('window.__result = null');
-  const started = await pg.evaluate('window.__start()');
-  const s = String(started);
-  if (s !== 'started' && s !== 'started-show') throw new Error('verification start failed: ' + s);
-
-  const deadline = Date.now() + MINT_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    const raw = await pg.evaluate('window.__result ? JSON.stringify(window.__result) : null');
-    if (raw) {
-      const r = JSON.parse(raw);
-      if (r.ok && r.param) return String(r.param);
-      throw new Error('verification rejected: ' + JSON.stringify(r.info || {}));
-    }
-    if (pg.isClosed()) throw new Error('page closed during verification');
-    await sleep(250);
-  }
-  throw new Error('verification timeout');
-}
-
-async function acquireParam() {
-  const pg = await ensurePage();
-  try {
-    const param = await mint(pg);
-    mints += 1;
-    pageUsed = true;
-    lastParam = param;
-    lastParamAt = Date.now();
-    return param;
-  } catch (e) {
-    fails += 1;
-    throw e;
-  }
 }
 
 const server = http.createServer((req, res) => {
   const url = req.url || '/';
+  const cors = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+  };
+  if (req.method === 'OPTIONS') { res.writeHead(204, cors); res.end(); return; }
+
   if (url.startsWith('/page')) {
-    const html = PAGE_HTML
-      .replace(/'11xygtvd'/g, JSON.stringify(SCENE))
-      .replace(/'sgp'/g, JSON.stringify(REGION))
-      .replace(/'no8xfe'/g, JSON.stringify(PREFIX));
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(html);
+    res.end(PAGE_HTML);
+    return;
+  }
+  if (url.startsWith('/report')) {
+    let raw = '';
+    req.on('data', (c) => { raw += c; });
+    req.on('end', () => {
+      res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+      res.end('{}');
+      try {
+        const d = JSON.parse(raw || '{}');
+        if (url.includes('ok=1') && d.param) {
+          lastParam = String(d.param);
+          lastParamAt = Date.now();
+          mints += 1;
+          log(`report ok (len=${lastParam.length}, total=${mints})`);
+        } else {
+          fails += 1;
+          errLog('report fail:', JSON.stringify(d.info || {}).slice(0, 200));
+        }
+      } catch (e) { errLog('bad report:', e.message); }
+    });
     return;
   }
   if (url.startsWith('/health')) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
-      ok: true, ready,
-      lastParamAgeMs: lastParamAt ? Date.now() - lastParamAt : null,
-      reuseMs: REUSE_MS, mints, fails,
+      ok: true,
+      paramAgeMs: lastParamAt ? Date.now() - lastParamAt : null,
+      maxAgeMs: MAX_AGE_MS, mints, fails,
     }));
     return;
   }
-  if (url.startsWith('/relay')) {
-    let raw = '';
-    req.on('data', (c) => { raw += c; });
-    req.on('end', () => {
-      chain = chain.then(async () => {
-        try {
-          const spec = JSON.parse(raw || '{}');
-          const param = await mintWithRetry();
-          const pg = await ensurePage();
-          const upstream = await pg.evaluate(async (spec, param) => {
-            const headers = { ...spec.headers, 'X-Aliyun-Captcha-Verify-Param': param };
-            const res = await fetch(spec.url, { method: 'POST', headers, body: spec.body });
-            const text = await res.text();
-            return { status: res.status, text: text.slice(0, 4000) };
-          }, spec, param);
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ param_len: param.length, ...upstream }));
-          log(`relay done status=${upstream.status}`);
-        } catch (e) {
-          errLog('relay failed:', e.message);
-          res.writeHead(503, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: e.message }));
-          try { if (page && !page.isClosed()) await page.close(); } catch {}
-          page = null;
-        }
-      }).catch(() => {});
-    });
-    return;
-  }
   if (url.startsWith('/param')) {
-    chain = chain.then(async () => {
-      try {
-        // 复用窗口内直接返回（ bursts 共享一发 param；上游历史接受 45s 内复用）
-        if (lastParam && Date.now() - lastParamAt < REUSE_MS) {
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ param: lastParam, cached: true }));
-          log(`serve cached (age=${Date.now() - lastParamAt}ms)`);
-          return;
-        }
-        const param = await mintWithRetry();
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ param }));
-        log(`mint ok (len=${param.length}, total=${mints})`);
-      } catch (e) {
-        errLog('mint failed:', e.message);
-        res.writeHead(503, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: e.message }));
-        // 失败后丢弃页面，下次请求重建，避免坏状态卡死
-        try { if (page && !page.isClosed()) await page.close(); } catch {}
-        page = null;
-      }
-    }).catch(() => {});
+    const age = lastParamAt ? Date.now() - lastParamAt : Infinity;
+    if (lastParam && age < MAX_AGE_MS) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ param: lastParam, ageMs: age }));
+      log(`serve param (age=${age}ms)`);
+    } else {
+      // param 过期：告知调用方稍后再取（页面循环会在下轮上报）
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'param expired', ageMs: Number.isFinite(age) ? age : null }));
+    }
     return;
   }
   res.writeHead(404); res.end();
@@ -222,13 +119,13 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, '127.0.0.1', () => {
   log(`listening on 127.0.0.1:${PORT} scene=${SCENE} region=${REGION} prefix=${PREFIX}`);
-  log(`chromium: ${CHROMIUM}`);
-  log(`page: ${PAGE_URL}`);
+  log(`chromium: ${CHROMIUM} | profile: ${PROFILE_DIR || '(tmp)'}`);
+  startChrome();
 });
 
 async function shutdown() {
   try { server.close(); } catch {}
-  try { if (browser) await browser.close(); } catch {}
+  try { if (chrome) chrome.kill(); } catch {}
   process.exit(0);
 }
 process.on('SIGTERM', shutdown);
